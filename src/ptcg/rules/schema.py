@@ -88,6 +88,33 @@ class AreaType(IntEnum):
     LOOKING           = 12
 
 
+class LogType(IntEnum):
+    SHUFFLE           = 0
+    HAS_BASIC_POKEMON = 1
+    TURN_START        = 2
+    TURN_END          = 3
+    DRAW              = 4
+    DRAW_REVERSE      = 5
+    MOVE_CARD         = 6
+    MOVE_CARD_REVERSE = 7
+    SWITCH            = 8
+    CHANGE            = 9
+    PLAY              = 10
+    ATTACH            = 11
+    EVOLVE            = 12
+    DEVOLVE           = 13
+    MOVE_ATTACHED     = 14
+    ATTACK            = 15
+    HP_CHANGE         = 16
+    POISONED          = 17
+    BURNED            = 18
+    ASLEEP            = 19
+    PARALYZED         = 20
+    CONFUSED          = 21
+    COIN              = 22
+    RESULT            = 23
+
+
 # ── Option type checks ────────────────────────────────────────────────────────
 # Each function checks a single option dict (one element of select["option"]).
 
