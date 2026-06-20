@@ -13,19 +13,28 @@ powered by the [cabt engine](https://matsuoinstitute.github.io/cabt/).
 
 ```
 PokemonBattle/
-├── submission.py                 # Arena entry point — imports from ptcg/
+├── submission.py                      # Arena entry point — imports from ptcg/
 ├── notebooks/
-│   └── test_agents.ipynb         # Kaggle notebook for testing agents
+│   └── test_agents.ipynb              # Kaggle notebook for testing agents
 ├── scripts/
-│   └── build_submission.py       # Packages submission.py + ptcg/ into submission.tar.gz
+│   └── build_submission.py            # Generates self-contained submission.py
 ├── setup.py
 ├── requirements.txt
 └── src/ptcg/
-    ├── agent_base.py             # Abstract base class all agents inherit from
-    ├── observation.py            # Stateless helpers for reading the observation dict
-    ├── game.py                   # Wrappers around the kaggle_environments / cabt API
-    └── agents/
-        └── random_agent.py       # First agent: picks actions uniformly at random
+    ├── agent_base.py                  # Abstract base class all agents inherit from
+    ├── observation.py                 # Stateless helpers for reading the observation dict
+    ├── game.py                        # Wrappers around the kaggle_environments / cabt API
+    ├── card_db.py                     # Loads card and attack metadata from the C library
+    ├── agents/
+    │   ├── random_agent.py            # Baseline: picks actions uniformly at random
+    │   ├── rule_based_agent.py        # Priority rule-list agent
+    │   └── inspector_agent.py         # Dev tool: records options for schema inspection
+    └── rules/
+        ├── rule.py                    # Abstract Rule base class
+        ├── schema.py                  # OptionType / CardType enums and type-check helpers
+        ├── damage.py                  # Effective damage formula (weakness × 2, resistance − 30)
+        ├── basic_rules.py             # Rule implementations
+        └── fallback.py                # RandomFallback — always matches, picks randomly
 ```
 
 ---
@@ -95,10 +104,84 @@ obs_utils.get_deck_count(obs, 0)        # remaining deck size
 obs_utils.get_status_conditions(obs, 0) # {"poisoned": bool, ...}
 ```
 
-### `agents/random_agent.py` — `RandomAgent`
+---
 
-The first included agent. Picks actions uniformly at random every turn.
-Uses the engine's bundled default deck.
+## Agents
+
+### `RandomAgent` — baseline
+
+**File:** `src/ptcg/agents/random_agent.py`
+
+Every turn, picks `maxCount` actions uniformly at random from the available
+options. No game knowledge is used. Useful as a baseline to measure how much
+better a smarter agent performs.
+
+---
+
+### `RuleBasedAgent` — priority rule list
+
+**File:** `src/ptcg/agents/rule_based_agent.py`
+
+Evaluates a fixed list of rules in priority order every turn. The first rule
+whose `matches()` condition is satisfied fires and its `select()` result is
+returned. `RandomFallback` is always last, so the agent never fails to act.
+
+Rules require the card and attack database (`card_db`) to perform card-aware
+decisions. The database is loaded from the C library on `on_game_start()`.
+On macOS (where the library is unavailable), rules that depend on it silently
+skip and fall through to `RandomFallback`.
+
+#### Rule priority order
+
+| Priority | Rule | Fires when | Selects |
+|---|---|---|---|
+| 1 | `SelectBestAttack` | Attack options are available and card DB is loaded | Best attack by effective damage — see ranking below |
+| 2 | `EvolveIfBeneficial` | An evolution raises HP or cures a status, and its best attack is not weaker | The evolution with the highest HP |
+| 3 | `SearchForEnergy` | Active has no energy attached and an energy card is playable from hand | The energy card |
+| 4 | `AttachEnergyToActive` | Attach option exists, energy not yet attached this turn, active not almost-dead without a KO opportunity (unless Stage 2) | The first attach option |
+| 5 | `PlayPokemonToBench` | Bench has space and a basic Pokémon is in hand | The basic Pokémon with the highest HP |
+| 6 | `RetreatIfLowHP` | Active HP ≤ 30 and retreat option exists | The first retreat option |
+| 7 | `RandomFallback` | Always — catches anything above misses | A random valid action |
+
+#### Attack ranking inside `SelectBestAttack`
+
+Every legal attack is scored on a six-element tuple; higher tuple = better choice.
+
+| Rank | Criterion | How |
+|---|---|---|
+| 1 | **Wins the game** | KO + exactly 1 prize card remaining |
+| 2 | **Knocks Out** | Effective damage ≥ opponent remaining HP |
+| 3 | **Hits weakness, in range next turn** | Hits weakness AND remaining HP after hit ≤ best effective damage we can deal |
+| 4 | **Highest effective damage** | `effective = base × 2` if weakness, `effective − 30` if resistance |
+| 5 | **Prefer non-resisted** | Tiebreaker when effective damage is equal |
+| 6 | **Lower energy cost** | Fewest energies in the attack's cost list |
+
+Weakness and resistance are read from `all_card_data()` card records for the specific attacker and defender. No hard-coded type chart is used.
+
+#### Energy attachment guard (`AttachEnergyToActive`)
+
+Blocked when all three conditions hold:
+- Active HP ≤ 30
+- No attack KOs the opponent this turn
+- Active is not a Stage 2 Pokémon
+
+#### Evolution guard (`EvolveIfBeneficial`)
+
+Blocked if the evolution's best attack has lower damage or higher energy cost than the current form's best attack.
+
+---
+
+### `InspectorAgent` — development tool
+
+**File:** `src/ptcg/agents/inspector_agent.py`
+
+Plays randomly while recording the raw observation at every turn. Use it to
+discover the actual structure of `obs["select"]["option"]` on Kaggle before
+implementing or tuning rules.
+
+After a battle, call `inspector.print_options(max_turns=5)` to print the
+options seen in the first N turns, including the chosen indices and the full
+option dict for each available action.
 
 ---
 
