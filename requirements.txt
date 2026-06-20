@@ -1,0 +1,12 @@
+kaggle-environments
+kaggle
+
+# cabt is NOT available on PyPI — pip install cabt will fail.
+# It is pre-installed inside Kaggle's competition notebook environment.
+# For local development, download it from the competition's Data tab:
+#   kaggle competitions download pokemon-tcg-ai-battle
+# then install the wheel from the downloaded files if one is provided,
+# or run your code directly inside a Kaggle notebook.
+#
+# After installing dependencies, install this package in editable mode:
+#   pip install -e .
