@@ -14,12 +14,16 @@ powered by the [cabt engine](https://matsuoinstitute.github.io/cabt/).
 ```
 PokemonBattle/
 ├── submission.py                      # Arena entry point — imports from ptcg/
+├── CLAUDE.md                          # AI assistant context and development guidelines
 ├── notebooks/
 │   └── test_agents.ipynb              # Kaggle notebook for testing agents
 ├── scripts/
 │   └── build_submission.py            # Generates self-contained submission.py
 ├── setup.py
 ├── requirements.txt
+├── docs/
+│   ├── cabt_api_reference.md     # Engine API: observation structure, data classes, enums, functions
+│   └── ptcg_ruleset.md           # TCG rules + known simulator deviations from official rules
 └── src/ptcg/
     ├── agent_base.py                  # Abstract base class all agents inherit from
     ├── observation.py                 # Stateless helpers for reading the observation dict
@@ -36,6 +40,15 @@ PokemonBattle/
         ├── basic_rules.py             # Rule implementations
         └── fallback.py                # RandomFallback — always matches, picks randomly
 ```
+
+---
+
+## Reference Docs
+
+| Doc | Purpose |
+|---|---|
+| [`docs/cabt_api_reference.md`](docs/cabt_api_reference.md) | Full engine API: observation dict shape, all data classes and enums, game/api/sim functions, deck and submission formats. |
+| [`docs/ptcg_ruleset.md`](docs/ptcg_ruleset.md) | Pokemon TCG rules (turn structure, combat, status conditions, win conditions) plus a **Simulator Differences** section covering known deviations from official rules. |
 
 ---
 
