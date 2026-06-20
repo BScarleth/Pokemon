@@ -181,12 +181,58 @@ After the active player's turn ends and before the next player's turn begins:
 ### Damage Calculation
 
 ```
-Final damage = (attack base damage ± modifiers) × weakness multiplier - resistance reduction
+Final damage = (attack base damage ± modifiers) × weakness multiplier − resistance reduction
 ```
 
 - **Weakness:** If the defending Pokémon is weak to the attack's type, damage is **×2**.
 - **Resistance:** If the defending Pokémon resists the attack's type, reduce damage by **−30** (value may vary by card).
 - Damage is applied to the defending Pokémon's `hp`. When `hp` reaches 0, that Pokémon is **Knocked Out**.
+
+### Type Matchups (Weakness & Resistance)
+
+There is **no universal type chart** in the Pokemon TCG. Unlike the video games, there is no
+fixed hierarchy of which types beat which. Instead, each card individually declares its own
+weakness and resistance in its printed stats.
+
+- Each Pokémon has **at most one weakness** and **at most one resistance** (or none).
+- These are fixed per card and never change during a game.
+- The same Pokémon species can have different weakness/resistance across different card sets.
+
+**In the engine**, both are fields on `CardData`:
+
+```python
+card.weakness    # EnergyType | None — type this card takes ×2 damage from
+card.resistance  # EnergyType | None — type this card takes −30 damage from
+```
+
+**Agent strategy note:** to exploit type matchups at runtime, build a lookup from
+`all_card_data()` once (cache it — the card pool never changes mid-match), then check the
+opponent's active Pokémon's weakness against the energy types you have attached:
+
+```python
+card_lookup = {c.cardId: c for c in all_card_data()}
+
+opponent_active = obs_utils.get_active_pokemon(obs, 1)
+if opponent_active:
+    card = card_lookup[opponent_active["id"]]
+    if card.weakness == EnergyType.FIRE:
+        # prioritise fire attacks — they deal double damage
+```
+
+The energy types available in the engine (`EnergyType` enum):
+
+| Type | Value | Type | Value |
+|---|---|---|---|
+| COLORLESS | 0 | FIGHTING | 6 |
+| GRASS | 1 | DARKNESS | 7 |
+| FIRE | 2 | METAL | 8 |
+| WATER | 3 | DRAGON | 9 |
+| LIGHTNING | 4 | RAINBOW | 10 |
+| PSYCHIC | 5 | TEAM_ROCKET | 11 |
+
+**COLORLESS** is not a Pokémon type that appears as a weakness or resistance — it is only
+used as an energy requirement (any single energy satisfies it). RAINBOW and TEAM_ROCKET are
+Special Energy types and also do not appear as weaknesses.
 
 ### Knocking Out a Pokémon
 
