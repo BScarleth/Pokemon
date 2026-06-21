@@ -1,15 +1,15 @@
 """
 Basic rule set for the rule-based agent.
 
-Field references are taken from the official cabt API docs:
-https://matsuoinstitute.github.io/cabt/api.html
+Two data sources, two access styles:
+  - Live board state (active/bench/hand Pokémon, the option list) comes from the
+    raw observation dict via ``obs_utils`` — accessed with ``.get(...)``.
+  - Static card metadata (``CardData`` / ``Attack``) comes from ``card_db`` as
+    typed dataclasses (from ``cg.api``) — accessed with attribute access.
 
-Pokemon fields:  id, serial, hp (remaining), maxHp, energies, energyCards,
-                 tools, preEvolution, appearThisTurn
-Option fields:   type (OptionType int), attackId, cardId, serial, area,
-                 index, playerIndex, ...
-State fields:    energyAttached, retreated, supporterPlayed, turn, yourIndex,
-                 result, players, stadium
+CardData fields:  cardId, name, cardType, retreatCost, hp, weakness, resistance,
+                  energyType, basic, stage1, stage2, ex, megaEx, tera, attacks
+Attack fields:    attackId, name, text, damage, energies
 """
 
 from ptcg import card_db
@@ -36,16 +36,8 @@ class SelectBestAttack(Rule):
       5. Tiebreaker A: prefer non-resisted attacks when effective damage is equal.
       6. Tiebreaker B: prefer lower energy cost.
 
-    Weakness and resistance are read exclusively from all_card_data() card
-    records — no hard-coded type chart is used. The damage formula is:
-      effective = base_damage
-      if defender.weakness == attacker.energyType: effective *= 2
-      if defender.resistance == attacker.energyType: effective = max(0, effective - 30)
-
     Falls through to RandomFallback when the card database is not loaded.
     """
-
-    # ── helpers ───────────────────────────────────────────────────────────────
 
     def _attack_options(self, obs: dict) -> list[tuple[int, dict]]:
         return [
@@ -53,31 +45,35 @@ class SelectBestAttack(Rule):
             if opt.get("type") == OptionType.ATTACK
         ]
 
-    def _effective(
-        self,
-        opt: dict,
-        attacker_card: dict,
-        defender_card: dict,
-    ) -> int:
-        base = card_db.get_attack(opt.get("attackId", -1)).get("damage", 0)
-        return damage.compute_effective_damage(attacker_card, defender_card, base)
+    def _attack_damage(self, opt: dict) -> int:
+        attack = card_db.get_attack(opt.get("attackId", -1))
+        return attack.damage if attack else 0
+
+    def _attack_energy_cost(self, opt: dict) -> int:
+        attack = card_db.get_attack(opt.get("attackId", -1))
+        return len(attack.energies) if attack else 0
+
+    def _effective(self, opt: dict, attacker_card, defender_card) -> int:
+        return damage.compute_effective_damage(
+            attacker_card, defender_card, self._attack_damage(opt)
+        )
 
     def _score(
         self,
         opt: dict,
-        attacker_card: dict,
-        defender_card: dict,
+        attacker_card,
+        defender_card,
         opponent_hp: int,
         prizes_remaining: int,
         best_effective_this_turn: int,
     ) -> tuple:
-        effective    = self._effective(opt, attacker_card, defender_card)
-        energy_cost  = len(card_db.get_attack(opt.get("attackId", -1)).get("energies", []))
+        effective   = self._effective(opt, attacker_card, defender_card)
+        energy_cost = self._attack_energy_cost(opt)
 
         kos_opponent = effective >= opponent_hp
         wins_game    = kos_opponent and prizes_remaining == 1
 
-        remaining_after_hit  = opponent_hp - effective
+        remaining_after_hit = opponent_hp - effective
         in_ko_range_next = (
             not kos_opponent
             and damage.hits_weakness(attacker_card, defender_card)
@@ -95,8 +91,6 @@ class SelectBestAttack(Rule):
             not is_resisted,    # bool — prefer non-resisted as tiebreaker
             -energy_cost,       # int  — negative so lower cost sorts higher
         )
-
-    # ── Rule interface ────────────────────────────────────────────────────────
 
     def matches(self, obs: dict) -> bool:
         return card_db.is_loaded() and bool(self._attack_options(obs))
@@ -116,8 +110,8 @@ class SelectBestAttack(Rule):
         opponent_hp      = opponent.get("hp", 0)
         prizes_remaining = len(obs_utils.get_prize_cards(obs, 0))
 
-        # Pre-compute the best effective damage available this turn (used for
-        # the "in KO range next turn" check in every candidate's score).
+        # Best effective damage available this turn, used by the
+        # "in KO range next turn" check in every candidate's score.
         best_effective_this_turn = max(
             self._effective(opt, attacker_card, defender_card)
             for _, opt in attack_opts
@@ -141,12 +135,9 @@ class SelectBestAttack(Rule):
 # ── 2. Retreat if active Pokémon HP is critically low ────────────────────────
 
 class RetreatIfLowHP(Rule):
-    """
-    Retreat when the active Pokémon's remaining HP is at or below HP_THRESHOLD
-    and a retreat option is available.
-    """
+    """Retreat when active remaining HP ≤ HP_THRESHOLD and retreat is available."""
 
-    HP_THRESHOLD = 30  # remaining HP — adjust after seeing real values in play
+    HP_THRESHOLD = 30
 
     def _retreat_indices(self, obs: dict) -> list[int]:
         return [
@@ -170,20 +161,19 @@ class RetreatIfLowHP(Rule):
 class PlayPokemonToBench(Rule):
     """
     Play a basic Pokémon from hand to the bench when bench space is available.
-    Prefers the Pokémon with the highest maxHp.
+    Prefers the Pokémon with the highest HP.
     Falls through if the card database is not loaded.
     """
 
     def _play_pokemon_indices(self, obs: dict) -> list[int]:
         if not card_db.is_loaded():
             return []
-        options = obs_utils.get_options(obs)
         result = []
-        for i, opt in enumerate(options):
+        for i, opt in enumerate(obs_utils.get_options(obs)):
             if opt.get("type") != OptionType.PLAY:
                 continue
             card = card_db.get_card(opt.get("cardId", -1))
-            if card.get("cardType") == CardType.POKEMON and card.get("basic", False):
+            if card and card.cardType == CardType.POKEMON and card.basic:
                 result.append(i)
         return result
 
@@ -196,11 +186,12 @@ class PlayPokemonToBench(Rule):
     def select(self, obs: dict) -> list[int]:
         indices = self._play_pokemon_indices(obs)
         options = obs_utils.get_options(obs)
-        # Prefer the basic Pokémon with the most HP
-        best = max(
-            indices,
-            key=lambda i: card_db.get_card(options[i].get("cardId", -1)).get("hp", 0)
-        )
+
+        def hp_of(i: int) -> int:
+            card = card_db.get_card(options[i].get("cardId", -1))
+            return card.hp if card else 0
+
+        best = max(indices, key=hp_of)
         return [best] * obs_utils.get_max_count(obs)
 
 
@@ -208,10 +199,10 @@ class PlayPokemonToBench(Rule):
 
 class AttachEnergyToActive(Rule):
     """
-    Attach energy to the active Pokémon, subject to these conditions:
-      - Energy can only be attached once per turn (checked via State.energyAttached).
-      - Skip if the active Pokémon is almost dead (hp <= threshold) AND the
-        opponent cannot be KO'd this turn AND the active is not a Stage 2 Pokémon.
+    Attach energy to the active Pokémon, subject to:
+      - Energy can only be attached once per turn (State.energyAttached).
+      - Skip if the active is almost dead (hp ≤ threshold) AND the opponent
+        cannot be KO'd this turn AND the active is not a Stage 2 Pokémon.
     """
 
     HP_THRESHOLD = 30
@@ -233,17 +224,20 @@ class AttachEnergyToActive(Rule):
         if opponent is None:
             return False
         opponent_hp = opponent.get("hp", 0)
-        return any(
-            card_db.get_attack(opt.get("attackId", -1)).get("damage", 0) >= opponent_hp
-            for opt in obs_utils.get_options(obs)
-            if opt.get("type") == OptionType.ATTACK
-        )
+        for opt in obs_utils.get_options(obs):
+            if opt.get("type") != OptionType.ATTACK:
+                continue
+            attack = card_db.get_attack(opt.get("attackId", -1))
+            if attack and attack.damage >= opponent_hp:
+                return True
+        return False
 
     def _active_is_stage2(self, obs: dict) -> bool:
         active = obs_utils.get_active_pokemon(obs, 0)
         if active is None or not card_db.is_loaded():
             return False
-        return card_db.get_card(active.get("id", -1)).get("stage2", False)
+        card = card_db.get_card(active.get("id", -1))
+        return bool(card and card.stage2)
 
     def matches(self, obs: dict) -> bool:
         if energy_already_attached(obs):
@@ -264,27 +258,34 @@ class AttachEnergyToActive(Rule):
 
 class EvolveIfBeneficial(Rule):
     """
-    Evolve the active Pokémon when the evolution:
-      - Has more HP than the current form, OR
-      - The active Pokémon has a special condition (evolution cures it).
+    Evolve the active Pokémon when the evolution has more HP than the current
+    form OR the active has a special condition (evolving cures it).
 
-    Block evolution if:
-      - The evolution's best attack damage is lower than the current form's, OR
-      - The evolution requires more energy for its best attack.
+    Block evolution if the evolution's best attack deals less damage or requires
+    more energy than the current form's best attack.
     """
 
     def _active_has_status(self, obs: dict) -> bool:
-        conditions = obs_utils.get_status_conditions(obs, 0)
-        return any(conditions.values())
+        return any(obs_utils.get_status_conditions(obs, 0).values())
 
-    def _best_attack(self, card: dict) -> dict:
-        """Return the Attack dict with the highest damage for a card."""
-        best = {}
-        for attack_id in card.get("attacks", []):
+    def _best_attack(self, card):
+        """Return the highest-damage Attack for a CardData, or None."""
+        if card is None:
+            return None
+        best = None
+        for attack_id in card.attacks:
             atk = card_db.get_attack(attack_id)
-            if atk.get("damage", 0) > best.get("damage", 0):
+            if atk and (best is None or atk.damage > best.damage):
                 best = atk
         return best
+
+    @staticmethod
+    def _damage(attack) -> int:
+        return attack.damage if attack else 0
+
+    @staticmethod
+    def _energy_cost(attack) -> int:
+        return len(attack.energies) if attack else 0
 
     def _beneficial_evolve_indices(self, obs: dict) -> list[int]:
         if not card_db.is_loaded():
@@ -303,17 +304,18 @@ class EvolveIfBeneficial(Rule):
             if opt.get("type") != OptionType.EVOLVE:
                 continue
             evo_card = card_db.get_card(opt.get("cardId", -1))
-            evo_hp   = evo_card.get("hp", 0)
+            if evo_card is None:
+                continue
             evo_best = self._best_attack(evo_card)
 
             # Block if evolution has a weaker best attack or higher energy cost
-            if evo_best.get("damage", 0) < current_best.get("damage", 0):
+            if self._damage(evo_best) < self._damage(current_best):
                 continue
-            if len(evo_best.get("energies", [])) > len(current_best.get("energies", [])):
+            if self._energy_cost(evo_best) > self._energy_cost(current_best):
                 continue
 
             # Allow if HP increases or current form has a status condition
-            if evo_hp > current_hp or has_status:
+            if evo_card.hp > current_hp or has_status:
                 result.append(i)
 
         return result
@@ -324,22 +326,22 @@ class EvolveIfBeneficial(Rule):
     def select(self, obs: dict) -> list[int]:
         candidates = self._beneficial_evolve_indices(obs)
         options = obs_utils.get_options(obs)
-        # Prefer the evolution with the greatest HP
-        best = max(
-            candidates,
-            key=lambda i: card_db.get_card(options[i].get("cardId", -1)).get("hp", 0)
-        )
+
+        def hp_of(i: int) -> int:
+            card = card_db.get_card(options[i].get("cardId", -1))
+            return card.hp if card else 0
+
+        best = max(candidates, key=hp_of)
         return [best] * obs_utils.get_max_count(obs)
 
 
-# ── 6. Search for energy if none in hand ─────────────────────────────────────
+# ── 6. Search for energy if none attached ────────────────────────────────────
 
 class SearchForEnergy(Rule):
     """
-    If the active Pokémon has no energy attached and there is a supporter or
-    item card in hand that can search for energy (card type BASIC_ENERGY or
-    SPECIAL_ENERGY is available as a PLAY option), use it.
-    Falls through if card database is not loaded.
+    If the active Pokémon has no energy attached and an energy card is playable
+    from hand (card type BASIC_ENERGY or SPECIAL_ENERGY), play it.
+    Falls through if the card database is not loaded.
     """
 
     def _active_has_energy(self, obs: dict) -> bool:
@@ -348,7 +350,7 @@ class SearchForEnergy(Rule):
             return False
         return len(active.get("energies", [])) > 0
 
-    def _energy_search_indices(self, obs: dict) -> list[int]:
+    def _energy_play_indices(self, obs: dict) -> list[int]:
         if not card_db.is_loaded():
             return []
         result = []
@@ -356,14 +358,13 @@ class SearchForEnergy(Rule):
             if opt.get("type") != OptionType.PLAY:
                 continue
             card = card_db.get_card(opt.get("cardId", -1))
-            card_type = card.get("cardType")
-            if card_type in (CardType.BASIC_ENERGY, CardType.SPECIAL_ENERGY):
+            if card and card.cardType in (CardType.BASIC_ENERGY, CardType.SPECIAL_ENERGY):
                 result.append(i)
         return result
 
     def matches(self, obs: dict) -> bool:
-        return not self._active_has_energy(obs) and bool(self._energy_search_indices(obs))
+        return not self._active_has_energy(obs) and bool(self._energy_play_indices(obs))
 
     def select(self, obs: dict) -> list[int]:
-        indices = self._energy_search_indices(obs)
+        indices = self._energy_play_indices(obs)
         return [indices[0]] * obs_utils.get_max_count(obs)

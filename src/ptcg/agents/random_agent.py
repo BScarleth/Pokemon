@@ -2,25 +2,9 @@ import random
 
 from ptcg.agent_base import BaseAgent
 from ptcg import observation as obs_utils
+from ptcg.decks import DECKS
 
-# Default deck taken from the cabt engine's bundled example (cabt.py).
-# Replace with your own 60-card deck once you know the full card pool.
-_DECK: list[int] = [
-    721, 721,
-    722, 722, 722, 722,
-    723, 723, 723, 723,
-    1092,
-    1121, 1121,
-    1145, 1145,
-    1163, 1163,
-    1219, 1219, 1219, 1219,
-    1227, 1227, 1227, 1227,
-    1262, 1262,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3,
-]  # 60 cards
+_DECK: list[int] = DECKS["default"]
 
 
 class RandomAgent(BaseAgent):

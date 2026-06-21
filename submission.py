@@ -1,22 +1,26 @@
 """
-Auto-generated from RandomAgent by scripts/build_submission.py.
-Do not edit manually — run the script to regenerate.
+Kaggle arena entry point.
+
+Bundled into submission.tar.gz (as main.py) together with the cg/ and ptcg/
+packages by scripts/build_submission.py. The competition harness imports this
+file and calls agent(obs_dict) each turn.
+
+To change which agent competes, swap the import and instantiation below.
 """
-import random
 
-DECK: list[int] = [
-    721, 721, 722, 722, 722, 722, 723, 723, 723, 723,
-    1092, 1121, 1121, 1145, 1145, 1163, 1163, 1219, 1219, 1219,
-    1219, 1227, 1227, 1227, 1227, 1262, 1262, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-]  # 60 cards
+import os
+import sys
+
+# Make the bundled cg/ and ptcg/ packages importable when the archive is
+# extracted by the arena.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from ptcg import card_db
+from ptcg.agents.rule_based_agent import RuleBasedAgent
+
+card_db.load()                 # load card/attack metadata once at startup
+_agent = RuleBasedAgent()
 
 
-def agent(obs: dict, *args) -> list[int]:
-    if obs.get("select") is None:
-        return DECK
-    options = obs["select"]["option"]
-    max_count = obs["select"]["maxCount"]
-    return random.sample(range(len(options)), max_count)
+def agent(obs_dict: dict) -> list[int]:
+    return _agent(obs_dict)

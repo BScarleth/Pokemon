@@ -19,14 +19,14 @@ def _card_name(card_id: int | None) -> str:
     if card_id is None:
         return "?"
     card = card_db.get_card(card_id)
-    return card.get("name") or f"Card#{card_id}"
+    return card.name if card else f"Card#{card_id}"
 
 
 def _attack_name(attack_id: int | None) -> str:
     if attack_id is None:
         return "?"
     atk = card_db.get_attack(attack_id)
-    return atk.get("name") or f"Attack#{attack_id}"
+    return atk.name if atk else f"Attack#{attack_id}"
 
 
 # ── Single log entry ──────────────────────────────────────────────────────────

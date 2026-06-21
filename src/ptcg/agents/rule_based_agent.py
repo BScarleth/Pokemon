@@ -2,6 +2,7 @@ from collections import Counter
 
 from ptcg import card_db
 from ptcg.agent_base import BaseAgent
+from ptcg.decks import DECKS
 from ptcg.rules.rule import Rule
 from ptcg.rules.basic_rules import (
     SelectBestAttack,
@@ -13,22 +14,7 @@ from ptcg.rules.basic_rules import (
 )
 from ptcg.rules.fallback import RandomFallback
 
-_DECK: list[int] = [
-    721, 721,
-    722, 722, 722, 722,
-    723, 723, 723, 723,
-    1092,
-    1121, 1121,
-    1145, 1145,
-    1163, 1163,
-    1219, 1219, 1219, 1219,
-    1227, 1227, 1227, 1227,
-    1262, 1262,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3,
-]  # 60 cards
+_DECK: list[int] = DECKS["default"]
 
 # Priority order: first matching rule wins.
 # Edit this list to add, remove, or reorder rules.
