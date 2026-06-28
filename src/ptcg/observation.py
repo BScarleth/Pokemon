@@ -87,6 +87,61 @@ def get_player_state(obs: dict, player_index: int) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
+# Perspective helpers
+#
+# The "players" array is absolute (player 0 / player 1). "yourIndex" tells us
+# which of the two the acting agent is, so "me" is players[yourIndex] — NOT
+# always players[0]. Always resolve me/opponent through these helpers.
+# --------------------------------------------------------------------------- #
+
+def get_your_index(obs: dict) -> int:
+    current = get_current_state(obs)
+    if current is None:
+        return 0
+    return current.get("yourIndex", 0)
+
+
+def get_opponent_index(obs: dict) -> int:
+    return 1 - get_your_index(obs)
+
+
+def my_active(obs: dict) -> dict | None:
+    return get_active_pokemon(obs, get_your_index(obs))
+
+
+def opponent_active(obs: dict) -> dict | None:
+    return get_active_pokemon(obs, get_opponent_index(obs))
+
+
+def my_bench(obs: dict) -> list:
+    return get_bench(obs, get_your_index(obs))
+
+
+def opponent_bench(obs: dict) -> list:
+    return get_bench(obs, get_opponent_index(obs))
+
+
+def my_player_state(obs: dict) -> dict | None:
+    return get_player_state(obs, get_your_index(obs))
+
+
+def my_hand_cards(obs: dict) -> list:
+    return get_hand(obs, get_your_index(obs))
+
+
+def my_prize_cards(obs: dict) -> list:
+    return get_prize_cards(obs, get_your_index(obs))
+
+
+def opponent_prize_cards(obs: dict) -> list:
+    return get_prize_cards(obs, get_opponent_index(obs))
+
+
+def my_status_conditions(obs: dict) -> dict:
+    return get_status_conditions(obs, get_your_index(obs))
+
+
+# --------------------------------------------------------------------------- #
 # Per-player board state
 # --------------------------------------------------------------------------- #
 

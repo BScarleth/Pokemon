@@ -3,7 +3,9 @@ Basic rule set for the rule-based agent.
 
 Two data sources, two access styles:
   - Live board state (active/bench/hand Pokémon, the option list) comes from the
-    raw observation dict via ``obs_utils`` — accessed with ``.get(...)``.
+    raw observation dict via ``obs_utils`` — accessed with ``.get(...)``. Always
+    resolve "me" / "opponent" through the perspective helpers (my_active, …),
+    because the players array is absolute and the agent may be player 0 or 1.
   - Static card metadata (``CardData`` / ``Attack``) comes from ``card_db`` as
     typed dataclasses (from ``cg.api``) — accessed with attribute access.
 
@@ -28,10 +30,9 @@ class SelectBestAttack(Rule):
     selects the best one.
 
     Priority order within attack selection:
-      1. Attacks that win the game this turn (KO + exactly 1 prize remaining).
+      1. Attacks that win the game this turn (KO while opponent has ≤ 1 prize left).
       2. Attacks that KO the opponent using effective damage.
-      3. Attacks that hit weakness and leave the opponent in KO range next turn
-         (remaining HP after this hit ≤ best effective damage we can deal).
+      3. Attacks that hit weakness and leave the opponent in KO range next turn.
       4. Attacks with the highest effective damage.
       5. Tiebreaker A: prefer non-resisted attacks when effective damage is equal.
       6. Tiebreaker B: prefer lower energy cost.
@@ -64,14 +65,14 @@ class SelectBestAttack(Rule):
         attacker_card,
         defender_card,
         opponent_hp: int,
-        prizes_remaining: int,
+        opponent_prizes_left: int,
         best_effective_this_turn: int,
     ) -> tuple:
         effective   = self._effective(opt, attacker_card, defender_card)
         energy_cost = self._attack_energy_cost(opt)
 
         kos_opponent = effective >= opponent_hp
-        wins_game    = kos_opponent and prizes_remaining == 1
+        wins_game    = kos_opponent and opponent_prizes_left <= 1
 
         remaining_after_hit = opponent_hp - effective
         in_ko_range_next = (
@@ -98,20 +99,18 @@ class SelectBestAttack(Rule):
     def select(self, obs: dict) -> list[int]:
         attack_opts = self._attack_options(obs)
 
-        my_active = obs_utils.get_active_pokemon(obs, 0)
-        opponent  = obs_utils.get_active_pokemon(obs, 1)
+        my_active = obs_utils.my_active(obs)
+        opponent  = obs_utils.opponent_active(obs)
 
         # Guard: if board state is incomplete fall back to first available attack
         if my_active is None or opponent is None:
             return [attack_opts[0][0]] * obs_utils.get_max_count(obs)
 
-        attacker_card    = card_db.get_card(my_active.get("id", -1))
-        defender_card    = card_db.get_card(opponent.get("id", -1))
-        opponent_hp      = opponent.get("hp", 0)
-        prizes_remaining = len(obs_utils.get_prize_cards(obs, 0))
+        attacker_card        = card_db.get_card(my_active.get("id", -1))
+        defender_card        = card_db.get_card(opponent.get("id", -1))
+        opponent_hp          = opponent.get("hp", 0)
+        opponent_prizes_left = len(obs_utils.opponent_prize_cards(obs))
 
-        # Best effective damage available this turn, used by the
-        # "in KO range next turn" check in every candidate's score.
         best_effective_this_turn = max(
             self._effective(opt, attacker_card, defender_card)
             for _, opt in attack_opts
@@ -124,7 +123,7 @@ class SelectBestAttack(Rule):
                 attacker_card,
                 defender_card,
                 opponent_hp,
-                prizes_remaining,
+                opponent_prizes_left,
                 best_effective_this_turn,
             ),
         )[0]
@@ -146,7 +145,7 @@ class RetreatIfLowHP(Rule):
         ]
 
     def matches(self, obs: dict) -> bool:
-        active = obs_utils.get_active_pokemon(obs, 0)
+        active = obs_utils.my_active(obs)
         if active is None:
             return False
         return active.get("hp", 999) <= self.HP_THRESHOLD and bool(self._retreat_indices(obs))
@@ -178,8 +177,8 @@ class PlayPokemonToBench(Rule):
         return result
 
     def matches(self, obs: dict) -> bool:
-        bench = obs_utils.get_bench(obs, 0)
-        player = obs_utils.get_player_state(obs, 0)
+        bench = obs_utils.my_bench(obs)
+        player = obs_utils.my_player_state(obs)
         bench_max = (player or {}).get("benchMax", 5)
         return len(bench) < bench_max and bool(self._play_pokemon_indices(obs))
 
@@ -214,13 +213,13 @@ class AttachEnergyToActive(Rule):
         ]
 
     def _active_is_almost_dead(self, obs: dict) -> bool:
-        active = obs_utils.get_active_pokemon(obs, 0)
+        active = obs_utils.my_active(obs)
         return active is not None and active.get("hp", 999) <= self.HP_THRESHOLD
 
     def _can_ko_this_turn(self, obs: dict) -> bool:
         if not card_db.is_loaded():
             return False
-        opponent = obs_utils.get_active_pokemon(obs, 1)
+        opponent = obs_utils.opponent_active(obs)
         if opponent is None:
             return False
         opponent_hp = opponent.get("hp", 0)
@@ -233,7 +232,7 @@ class AttachEnergyToActive(Rule):
         return False
 
     def _active_is_stage2(self, obs: dict) -> bool:
-        active = obs_utils.get_active_pokemon(obs, 0)
+        active = obs_utils.my_active(obs)
         if active is None or not card_db.is_loaded():
             return False
         card = card_db.get_card(active.get("id", -1))
@@ -266,7 +265,7 @@ class EvolveIfBeneficial(Rule):
     """
 
     def _active_has_status(self, obs: dict) -> bool:
-        return any(obs_utils.get_status_conditions(obs, 0).values())
+        return any(obs_utils.my_status_conditions(obs).values())
 
     def _best_attack(self, card):
         """Return the highest-damage Attack for a CardData, or None."""
@@ -290,7 +289,7 @@ class EvolveIfBeneficial(Rule):
     def _beneficial_evolve_indices(self, obs: dict) -> list[int]:
         if not card_db.is_loaded():
             return []
-        active = obs_utils.get_active_pokemon(obs, 0)
+        active = obs_utils.my_active(obs)
         if active is None:
             return []
 
@@ -345,7 +344,7 @@ class SearchForEnergy(Rule):
     """
 
     def _active_has_energy(self, obs: dict) -> bool:
-        active = obs_utils.get_active_pokemon(obs, 0)
+        active = obs_utils.my_active(obs)
         if active is None:
             return False
         return len(active.get("energies", [])) > 0

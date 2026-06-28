@@ -16,11 +16,12 @@ class InspectorAgent(BaseAgent):
     After a battle, call print_options(max_turns=N) to see the raw option dicts.
     """
 
-    def __init__(self):
+    def __init__(self, deck: list[int] | None = None):
+        self._deck = deck if deck is not None else _DECK
         self.history: list[dict] = []
 
     def get_deck(self) -> list[int]:
-        return _DECK
+        return self._deck
 
     def on_game_start(self) -> None:
         self.history.clear()

@@ -9,8 +9,11 @@ _DECK: list[int] = DECKS["default"]
 
 class RandomAgent(BaseAgent):
 
+    def __init__(self, deck: list[int] | None = None):
+        self._deck = deck if deck is not None else _DECK
+
     def get_deck(self) -> list[int]:
-        return _DECK
+        return self._deck
 
     def on_game_start(self) -> None:
         pass

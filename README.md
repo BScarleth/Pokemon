@@ -5,7 +5,7 @@ A modular Python framework for building AI agents that compete in the
 powered by the [cabt engine](https://matsuoinstitute.github.io/cabt/).
 
 > **Platform note:** the cabt engine's native library (`libcg.so`) is Linux-only.
-> All testing must be done inside a Kaggle notebook. See the [Testing](#testing) section.
+> Games can only run inside a **Kaggle notebook** (or Linux). See [Testing](#testing).
 
 ---
 
@@ -13,32 +13,43 @@ powered by the [cabt engine](https://matsuoinstitute.github.io/cabt/).
 
 ```
 PokemonBattle/
-├── submission.py                      # Arena entry point — imports from ptcg/
-├── CLAUDE.md                          # AI assistant context and development guidelines
+├── submission.py                      # Arena entry point (bundled as main.py)
+├── CLAUDE.md                          # AI assistant context / dev guidelines
 ├── notebooks/
-│   └── test_agents.ipynb              # Kaggle notebook for testing agents
+│   └── test_agents.ipynb              # Kaggle notebook: run tournaments, replays
 ├── scripts/
-│   └── build_submission.py            # Generates self-contained submission.py
+│   └── build_submission.py           # Bundles submission.tar.gz (main.py + cg + ptcg)
+├── docs/
+│   ├── cabt_api_reference.md          # Engine API: observation, data classes, enums
+│   └── ptcg_ruleset.md               # TCG rules + simulator deviations
 ├── setup.py
 ├── requirements.txt
-├── docs/
-│   ├── cabt_api_reference.md     # Engine API: observation structure, data classes, enums, functions
-│   └── ptcg_ruleset.md           # TCG rules + known simulator deviations from official rules
-└── src/ptcg/
-    ├── agent_base.py                  # Abstract base class all agents inherit from
-    ├── observation.py                 # Stateless helpers for reading the observation dict
-    ├── game.py                        # Wrappers around the kaggle_environments / cabt API
-    ├── card_db.py                     # Loads card and attack metadata from the C library
-    ├── agents/
-    │   ├── random_agent.py            # Baseline: picks actions uniformly at random
-    │   ├── rule_based_agent.py        # Priority rule-list agent
-    │   └── inspector_agent.py         # Dev tool: records options for schema inspection
-    └── rules/
-        ├── rule.py                    # Abstract Rule base class
-        ├── schema.py                  # OptionType / CardType enums and type-check helpers
-        ├── damage.py                  # Effective damage formula (weakness × 2, resistance − 30)
-        ├── basic_rules.py             # Rule implementations
-        └── fallback.py                # RandomFallback — always matches, picks randomly
+└── src/
+    ├── cg/                            # Official engine helper package (Linux-only libcg.so)
+    │   ├── api.py                     # Typed dataclasses + enums + all_card_data/all_attack
+    │   ├── game.py  sim.py  utils.py  # Low-level battle control / ctypes bindings
+    │   └── libcg.so                   # Native engine library
+    └── ptcg/                          # Our framework
+        ├── agent_base.py             # Abstract base class all agents inherit from
+        ├── observation.py            # Read the observation dict (incl. perspective helpers)
+        ├── card_db.py                # Typed card/attack lookup via cg.api
+        ├── decks.py                  # Named 60-card decks
+        ├── log_formatter.py          # Human-readable game replay
+        ├── game.py                   # kaggle_environments / cabt wrappers
+        ├── agents/
+        │   ├── random_agent.py       # Baseline: uniform random
+        │   ├── rule_based_agent.py   # Priority rule-list agent
+        │   ├── planner_agent.py      # Turn-level AttackPlan agent
+        │   └── inspector_agent.py    # Dev tool: records raw options
+        ├── rules/
+        │   ├── rule.py               # Abstract Rule base class
+        │   ├── schema.py             # Re-exports cg.api enums + option helpers
+        │   ├── damage.py             # Effective damage (weakness ×2, resistance −30)
+        │   ├── basic_rules.py        # Six rule implementations
+        │   └── fallback.py           # RandomFallback — always matches
+        └── planning/
+            ├── pokemon_score.py      # Target valuation (prize count first)
+            └── attack_plan.py        # Turn-level AttackPlan + builder
 ```
 
 ---
@@ -47,8 +58,8 @@ PokemonBattle/
 
 | Doc | Purpose |
 |---|---|
-| [`docs/cabt_api_reference.md`](docs/cabt_api_reference.md) | Full engine API: observation dict shape, all data classes and enums, game/api/sim functions, deck and submission formats. |
-| [`docs/ptcg_ruleset.md`](docs/ptcg_ruleset.md) | Pokemon TCG rules (turn structure, combat, status conditions, win conditions) plus a **Simulator Differences** section covering known deviations from official rules. |
+| [`docs/cabt_api_reference.md`](docs/cabt_api_reference.md) | Engine API: observation dict shape, all data classes/enums, game/api/sim functions, deck & submission formats. |
+| [`docs/ptcg_ruleset.md`](docs/ptcg_ruleset.md) | TCG rules (turns, combat, status, win conditions) + a **Simulator Differences** section. |
 
 ---
 
@@ -59,41 +70,46 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+The `cg` package (with `libcg.so`) ships in `src/cg/`. It only loads on
+**Linux**; on macOS/Windows any code path that touches the engine raises a
+`dlopen` error and `card_db.load()` returns `False`. Develop locally, run on
+Kaggle.
+
 ---
 
 ## How the Game Works
 
 The cabt engine calls your agent in two phases each game:
 
-1. **Deck selection** (`obs["select"]` is `None`) — return your 60-card deck as `list[int]`.
-   `BaseAgent.__call__` handles this automatically via `get_deck()`.
-2. **Every turn** (`obs["select"]` is set) — return action indices from `obs["select"]["option"]`.
+1. **Deck selection** (`obs["select"]` is `None`) — return your 60-card deck as
+   `list[int]`. `BaseAgent.__call__` handles this automatically via `get_deck()`.
+2. **Every turn** (`obs["select"]` is set) — return action indices from
+   `obs["select"]["option"]`.
 
 ```
 observation dict
-├── "logs"     — list of past game events
-├── "current"  — full board state (None during deck-selection phase)
-│   └── "players"  — list of two PlayerState dicts
-│       ├── "active"     — active Pokémon (list of 0-1, may be None)
-│       ├── "bench"      — benched Pokémon (up to 5)
-│       ├── "hand"       — cards in hand (visible only to owner)
-│       ├── "handCount"  — number of cards in hand
-│       ├── "prize"      — prize cards (face-down shown as None)
-│       ├── "deckCount"  — remaining cards in deck
-│       ├── "discard"    — discard pile
-│       ├── "poisoned", "burned", "asleep", "paralyzed", "confused"  — bools
-└── "select"   — available choices (None during deck-selection phase)
-    ├── "option"    — list of available actions
-    └── "maxCount"  — how many indices the agent must return
+├── "logs"     — events since the last selection
+├── "current"  — board state (None during deck selection)
+│   ├── "yourIndex" — which player you are (0 or 1)
+│   └── "players"   — ABSOLUTE list [player0, player1]
+│       ├── active, bench, hand, handCount, prize, deckCount, discard, benchMax
+│       └── poisoned / burned / asleep / paralyzed / confused
+└── "select"   — available choices (None during deck selection)
+    ├── "option"   — list of option dicts (type = OptionType int, + fields)
+    ├── "minCount" / "maxCount" — how many indices to return
+    └── "context"  — SelectContext (what is being chosen)
 ```
+
+> **Perspective matters.** `players` is absolute; `yourIndex` says which one you
+> are. "Your" active is `players[yourIndex]`, *not* `players[0]`. Always go
+> through the perspective helpers in `observation.py` (`my_active`,
+> `opponent_active`, …) — never hard-code index 0 as "me".
 
 ---
 
 ## Module Reference
 
 ### `agent_base.py` — `BaseAgent`
-
-Abstract base class every agent must subclass.
 
 | Method | When called | Must return |
 |---|---|---|
@@ -102,172 +118,180 @@ Abstract base class every agent must subclass.
 | `on_game_start()` | Before first turn | Nothing |
 | `on_game_end(result)` | After last turn | Nothing |
 
-### `observation.py` — Board State Helpers
+All agents accept an optional `deck=` argument so a deck can be chosen at runtime
+(`RandomAgent(deck=DECKS["mega_lucario_ex"])`).
+
+### `observation.py` — board state helpers
 
 ```python
 from ptcg import observation as obs_utils
 
-obs_utils.get_options(obs)              # available choices
-obs_utils.get_max_count(obs)            # how many to pick
-obs_utils.get_active_pokemon(obs, 0)    # your active Pokémon
-obs_utils.get_bench(obs, 0)             # your bench
-obs_utils.get_hand(obs, 0)              # your hand
-obs_utils.get_prize_cards(obs, 0)       # your prize cards
-obs_utils.get_deck_count(obs, 0)        # remaining deck size
-obs_utils.get_status_conditions(obs, 0) # {"poisoned": bool, ...}
+obs_utils.get_options(obs)            # available option dicts
+obs_utils.get_max_count(obs)          # how many to pick
+# Perspective-aware (preferred):
+obs_utils.my_active(obs)              # your active Pokémon
+obs_utils.opponent_active(obs)        # opponent's active
+obs_utils.my_bench(obs)               # your bench
+obs_utils.my_prize_cards(obs)         # your prize cards
+obs_utils.opponent_prize_cards(obs)   # opponent's prize cards
+obs_utils.my_status_conditions(obs)   # {"poisoned": bool, ...}
 ```
+
+### `card_db.py` — typed card/attack lookup
+
+Loads `CardData` / `Attack` dataclasses from `cg.api.all_card_data()` /
+`all_attack()`. Call `card_db.load()` once (agents do this in `on_game_start`),
+then `card_db.get_card(id)` / `card_db.get_attack(id)` (return `None` if unknown
+or the engine isn't loaded).
+
+### `decks.py` — named decks
+
+`DECKS` maps a name to a 60-card `list[int]`. Currently `"default"` (engine
+sample) and `"mega_lucario_ex"` (from the official sample notebook).
+
+### `log_formatter.py` — replay
+
+`format_history(history, agent_names=[...])` turns a game's `visualize` data into
+readable commentary (card names, KOs, status, winner), suppressing noise.
+
+### `rules/` — reusable decision rules
+
+`Rule` (abstract `matches`/`select`), `schema` (re-exports the `cg.api` enums +
+option-type helpers), `damage` (effective-damage formula), `basic_rules` (the
+six rules), `fallback` (`RandomFallback`).
+
+### `planning/` — turn-level planning
+
+`pokemon_score(pokemon)` values a target (prize count → energy → tools → stage →
+damage taken → threat). `build_attack_plan(...)` returns an `AttackPlan`
+(`best_attacker`, `best_target`, `attack_id`, `should_switch_or_use_boss`,
+`expected_effective_damage`, `expected_prizes`, `required_energy`, `can_take_ko`).
 
 ---
 
 ## Agents
 
 ### `RandomAgent` — baseline
-
-**File:** `src/ptcg/agents/random_agent.py`
-
-Every turn, picks `maxCount` actions uniformly at random from the available
-options. No game knowledge is used. Useful as a baseline to measure how much
-better a smarter agent performs.
-
----
+Picks `maxCount` actions uniformly at random. No game knowledge; the yardstick
+for measuring smarter agents.
 
 ### `RuleBasedAgent` — priority rule list
-
-**File:** `src/ptcg/agents/rule_based_agent.py`
-
-Evaluates a fixed list of rules in priority order every turn. The first rule
-whose `matches()` condition is satisfied fires and its `select()` result is
-returned. `RandomFallback` is always last, so the agent never fails to act.
-
-Rules require the card and attack database (`card_db`) to perform card-aware
-decisions. The database is loaded from the C library on `on_game_start()`.
-On macOS (where the library is unavailable), rules that depend on it silently
-skip and fall through to `RandomFallback`.
-
-#### Rule priority order
+Evaluates rules in priority order; the first whose `matches()` is true fires.
+`RandomFallback` is always last so the agent never fails to act. Records the rule
+that fired each turn in `rule_log`.
 
 | Priority | Rule | Fires when | Selects |
 |---|---|---|---|
-| 1 | `SelectBestAttack` | Attack options are available and card DB is loaded | Best attack by effective damage — see ranking below |
-| 2 | `EvolveIfBeneficial` | An evolution raises HP or cures a status, and its best attack is not weaker | The evolution with the highest HP |
-| 3 | `SearchForEnergy` | Active has no energy attached and an energy card is playable from hand | The energy card |
-| 4 | `AttachEnergyToActive` | Attach option exists, energy not yet attached this turn, active not almost-dead without a KO opportunity (unless Stage 2) | The first attach option |
-| 5 | `PlayPokemonToBench` | Bench has space and a basic Pokémon is in hand | The basic Pokémon with the highest HP |
-| 6 | `RetreatIfLowHP` | Active HP ≤ 30 and retreat option exists | The first retreat option |
-| 7 | `RandomFallback` | Always — catches anything above misses | A random valid action |
+| 1 | `SelectBestAttack` | Attacks available, card DB loaded | Best attack by effective damage (ranking below) |
+| 2 | `EvolveIfBeneficial` | Evolution raises HP or cures a status, best attack not weaker | Highest-HP evolution |
+| 3 | `SearchForEnergy` | Active has no energy and an energy card is playable | The energy card |
+| 4 | `AttachEnergyToActive` | Attach available, energy not yet attached, active not almost-dead w/o a KO (unless Stage 2) | First attach |
+| 5 | `PlayPokemonToBench` | Bench space + a basic Pokémon in hand | Highest-HP basic |
+| 6 | `RetreatIfLowHP` | Active HP ≤ 30 and retreat available | First retreat |
+| 7 | `RandomFallback` | Always | A random valid action |
 
-#### Attack ranking inside `SelectBestAttack`
+**`SelectBestAttack` ranking** (six-element tuple, higher wins): wins the game
+(KO while opponent ≤ 1 prize) → KO → hits weakness & leaves target in KO range
+next turn → highest effective damage → prefer non-resisted → lower energy cost.
+Weakness/resistance come from card data (`weakness ×2`, `resistance −30`), never
+a hard-coded type chart.
 
-Every legal attack is scored on a six-element tuple; higher tuple = better choice.
+### `PlannerAgent` — turn-level AttackPlan
+**File:** `src/ptcg/agents/planner_agent.py`
 
-| Rank | Criterion | How |
-|---|---|---|
-| 1 | **Wins the game** | KO + exactly 1 prize card remaining |
-| 2 | **Knocks Out** | Effective damage ≥ opponent remaining HP |
-| 3 | **Hits weakness, in range next turn** | Hits weakness AND remaining HP after hit ≤ best effective damage we can deal |
-| 4 | **Highest effective damage** | `effective = base × 2` if weakness, `effective − 30` if resistance |
-| 5 | **Prefer non-resisted** | Tiebreaker when effective damage is equal |
-| 6 | **Lower energy cost** | Fewest energies in the attack's cost list |
+Instead of deciding each action independently, it builds one `AttackPlan` at the
+start of every turn and judges every action by how well it serves the plan:
 
-Weakness and resistance are read from `all_card_data()` card records for the specific attacker and defender. No hard-coded type chart is used.
+1. attach energy to the **planned attacker** until it can attack,
+2. switch / retreat to bring the planned attacker active,
+3. play **Boss Orders** only when it enables the planned KO / threat removal,
+4. execute the planned attack,
+5. choose searched cards (`TO_HAND`) that fill gaps in the plan.
 
-#### Energy attachment guard (`AttachEnergyToActive`)
+Targets are valued by `pokemon_score` (prize count first), and game-winning KOs
+dominate. Decision labels are recorded in `rule_log` for the notebook breakdown.
+`GUST_CARD_IDS` / `SWITCH_CARD_IDS` list the Boss-Orders / Switch card IDs and
+are easy to extend for other decks.
 
-Blocked when all three conditions hold:
-- Active HP ≤ 30
-- No attack KOs the opponent this turn
-- Active is not a Stage 2 Pokémon
-
-#### Evolution guard (`EvolveIfBeneficial`)
-
-Blocked if the evolution's best attack has lower damage or higher energy cost than the current form's best attack.
-
----
-
-### `InspectorAgent` — development tool
-
-**File:** `src/ptcg/agents/inspector_agent.py`
-
-Plays randomly while recording the raw observation at every turn. Use it to
-discover the actual structure of `obs["select"]["option"]` on Kaggle before
-implementing or tuning rules.
-
-After a battle, call `inspector.print_options(max_turns=5)` to print the
-options seen in the first N turns, including the chosen indices and the full
-option dict for each available action.
+### `InspectorAgent` — dev tool
+Plays randomly while recording every observation. After a battle,
+`inspector.print_options(max_turns=5)` prints the raw option dicts so you can
+inspect the engine's actual data on Kaggle.
 
 ---
 
 ## Adding a New Agent
 
 1. Create `src/ptcg/agents/my_agent.py`.
-2. Subclass `BaseAgent` and implement all four methods.
+2. Subclass `BaseAgent`, implement the four methods, accept an optional `deck=`.
 3. Add `"MyAgent"` to `AGENTS` in the notebook to test it.
 
 ```python
 from ptcg.agent_base import BaseAgent
 from ptcg import observation as obs_utils
-
-_DECK: list[int] = [...]  # 60 card IDs
+from ptcg.decks import DECKS
 
 class MyAgent(BaseAgent):
+    def __init__(self, deck=None):
+        self._deck = deck if deck is not None else DECKS["default"]
 
-    def get_deck(self) -> list[int]:
-        return _DECK
+    def get_deck(self):       return self._deck
+    def on_game_start(self):  pass
+    def on_game_end(self, r): pass
 
-    def on_game_start(self) -> None:
-        pass
-
-    def on_game_end(self, result: dict) -> None:
-        pass
-
-    def select_action(self, obs: dict) -> list[int]:
+    def select_action(self, obs):
         options   = obs_utils.get_options(obs)
         max_count = obs_utils.get_max_count(obs)
-        return ...  # your strategy here
+        return ...  # your strategy
 ```
 
 The file name must be the snake_case of the class name:
-`MyAgent` → `my_agent.py`, `RandomAgent` → `random_agent.py`.
+`MyAgent` → `my_agent.py` (the notebook resolves agents this way).
 
 ---
 
-## Building a Deck
+## Decks
 
-A deck is a list of exactly **60 integers** (card IDs). The default deck is
-already set in `_DECK` inside each agent file using the engine's bundled
-example. To build your own, check the card IDs printed in the notebook's
-"Available deck" cell and the competition's starter notebooks on Kaggle.
-
-Once you have your 60 IDs, update `_DECK` in your agent file.
+Decks live in `src/ptcg/decks.py` as named entries in `DECKS`. To add one, append
+a `name: list[int]` (exactly 60 card IDs). Card IDs and names can be browsed in
+the notebook's **Available decks** section (uses `card_db`). Pick which deck each
+agent uses at runtime via `DECK_CHOICE` in the notebook, or pass `deck=` directly.
 
 ---
 
 ## Testing
 
-All testing must be done inside a Kaggle notebook — cabt is pre-installed there.
+cabt is Linux-only, so testing happens **inside a Kaggle notebook**. Open
+`notebooks/test_agents.ipynb`, set `GITHUB_URL` (and optionally `BRANCH` to clone
+a single branch), then run all cells. Sections:
 
-Open `notebooks/test_agents.ipynb`, set your GitHub URL, edit `AGENTS`, and run all cells.
-The notebook will:
-- Clone this repo and install the package
-- Print the available card IDs from the default deck
-- Run every agent in `AGENTS` against every other agent
-- Print a results summary
+1. **Clone repo** — optional single-branch clone.
+2. **Card database** — loads `card_db`; warns if it failed (then `PlannerAgent`/
+   `RuleBasedAgent` behave like `RandomAgent`).
+3. **Available decks** — every deck in `DECKS` with Pokémon and counts.
+4. **Configure tournament** — `AGENTS`, `NICKNAMES`, `DECK_CHOICE`, `N_GAMES`.
+   Same-class matchups are auto-labeled `(P0)` / `(P1)` so you can tell sides apart.
+5. **Run tournament** — every agent vs every agent, `N_GAMES` each.
+6. **Results summary** — win/draw/loss table.
+7. **Rule firing breakdown** — which rule/decision fired (per agent). If
+   `RandomFallback` is ~100%, `card_db` didn't load.
+8. **Replay a tournament game** — readable replay of any matchup's last game.
+9. **Custom game** — one-off match with nicknames and decks set at runtime.
 
 ---
 
 ## Submitting to Kaggle
 
-### 1. Install the Kaggle CLI
+The submission is a **tar.gz** bundling the entry point with the `cg` and `ptcg`
+packages (the format the official sample uses).
 
+### 1. Install the Kaggle CLI
 ```bash
 pip install kaggle
 ```
 
 ### 2. Set up credentials
-
 Go to https://www.kaggle.com/settings → **API** → **Create New Token**, then:
-
 ```bash
 mkdir -p ~/.kaggle
 mv ~/Downloads/kaggle.json ~/.kaggle/kaggle.json
@@ -275,38 +299,32 @@ chmod 600 ~/.kaggle/kaggle.json
 ```
 
 ### 3. Accept competition rules
-
 Visit the competition page and click **Join Competition**.
 
 ### 4. Choose your agent
-
-Open `scripts/build_submission.py` and set `AGENT_CLASS` and `AGENT_MODULE`
-to the agent you want to submit:
-
+Edit the import in `submission.py` to the agent you want to compete:
 ```python
-AGENT_CLASS = "RandomAgent"
-AGENT_MODULE = "ptcg.agents.random_agent"
+from ptcg.agents.planner_agent import PlannerAgent
+_agent = PlannerAgent()
 ```
 
-### 5. Generate submission.py
-
+### 5. Build the archive
 ```bash
 python scripts/build_submission.py
 ```
-
-This reads your agent class and generates a self-contained `submission.py`
-with no local imports — exactly what the competition arena expects.
+Produces `submission.tar.gz` containing:
+```
+main.py   (= submission.py)
+cg/       (engine helpers + libcg.so)
+ptcg/     (our framework)
+```
 
 ### 6. Submit
-
 ```bash
-kaggle competitions submit pokemon-tcg-ai-battle \
-  -f submission.py \
-  -m "your description"
+kaggle competitions submit pokemon-tcg-ai-battle -f submission.tar.gz -m "your description"
 ```
 
 ### 7. Check results
-
 ```bash
 kaggle competitions submissions pokemon-tcg-ai-battle
 kaggle competitions leaderboard pokemon-tcg-ai-battle

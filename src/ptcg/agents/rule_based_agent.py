@@ -31,12 +31,13 @@ DEFAULT_RULES: list[Rule] = [
 
 class RuleBasedAgent(BaseAgent):
 
-    def __init__(self, rules: list[Rule] | None = None):
+    def __init__(self, rules: list[Rule] | None = None, deck: list[int] | None = None):
         self.rules    = rules if rules is not None else DEFAULT_RULES
+        self._deck    = deck if deck is not None else _DECK
         self.rule_log: list[str] = []   # name of the rule that fired each turn
 
     def get_deck(self) -> list[int]:
-        return _DECK
+        return self._deck
 
     def on_game_start(self) -> None:
         card_db.load()          # no-op if already loaded or on non-Linux
